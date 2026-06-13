@@ -80,4 +80,18 @@ for voice_id, voice_info in AVAILABLE_VOICES.items():
     if language:
         if language not in VOICES_BY_LANGUAGE:
             VOICES_BY_LANGUAGE[language] = []
-        VOICES_BY_LANGUAGE[language].append(voice_id) 
+        VOICES_BY_LANGUAGE[language].append(voice_id)
+
+# Mapping from lang_code (first letter of voice_id) to human-readable language name
+# Used for translation prompts when TTS voice language doesn't match response language
+LANG_CODE_TO_NAME = {
+    'a': 'English',
+    'b': 'English',
+    'j': 'Japanese',
+    'z': 'Chinese',
+    'e': 'Spanish',
+    'f': 'French',
+    'h': 'Hindi',
+    'i': 'Italian',
+    'p': 'Portuguese',
+} 

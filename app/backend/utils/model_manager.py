@@ -15,7 +15,7 @@ from huggingface_hub import hf_hub_download
 import warnings
 import re
 import concurrent.futures
-from app.backend.utils.kokoro_voices import AVAILABLE_VOICES, VOICES_BY_LANGUAGE
+from app.backend.utils.kokoro_voices import AVAILABLE_VOICES, VOICES_BY_LANGUAGE, LANG_CODE_TO_NAME
 from app.backend.utils.text_utils import clean_text_for_tts
 
 # Try to import Gemini, but it's optional
@@ -100,13 +100,14 @@ class ModelManager:
         self.blip_load_failed = False
 
         if self.use_deepseek:
+            deepseek_base_url = config.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
             self.deepseek_client = OpenAI(
                 api_key=deepseek_key,
-                base_url="https://api.deepseek.com"
+                base_url=deepseek_base_url
             )
             self.deepseek_model = config.get("DEEPSEEK_MODEL", "deepseek-chat")
             self.vision_backend = "deepseek+blip"
-            print(f"[Vision] DeepSeek + BLIP (lazy-load)")
+            print(f"[Vision] DeepSeek + BLIP (lazy-load) via {deepseek_base_url}")
 
         elif self.use_gemini:
             genai.configure(api_key=gemini_key)
@@ -162,6 +163,69 @@ class ModelManager:
         if not voice_id or len(voice_id) < 2:
             return 'a'
         return voice_id[0]
+
+    def detect_query_language(self, text):
+        """
+        Detect the primary language of a query string.
+        Uses Unicode character range heuristics.
+
+        Returns:
+            'zh' for Chinese, 'ja' for Japanese, 'ko' for Korean, 'en' for English/other
+        """
+        if not text:
+            return 'en'
+
+        cjk_count = 0
+        hiragana_count = 0
+        katakana_count = 0
+        hangul_count = 0
+        total_char_count = 0
+
+        for char in text:
+            code_point = ord(char)
+            if code_point >= 0x4E00 and code_point <= 0x9FFF:  # CJK Unified Ideographs
+                cjk_count += 1
+                total_char_count += 1
+            elif code_point >= 0x3040 and code_point <= 0x309F:  # Hiragana
+                hiragana_count += 1
+                total_char_count += 1
+            elif code_point >= 0x30A0 and code_point <= 0x30FF:  # Katakana
+                katakana_count += 1
+                total_char_count += 1
+            elif code_point >= 0xAC00 and code_point <= 0xD7AF:  # Hangul
+                hangul_count += 1
+                total_char_count += 1
+            elif char.isalpha():
+                total_char_count += 1
+
+        if total_char_count == 0:
+            return 'en'
+
+        cjk_ratio = cjk_count / total_char_count
+
+        # Japanese: has hiragana/katakana, or CJK with kana
+        if hiragana_count > 0 or katakana_count > 0:
+            return 'ja'
+
+        # Korean: significant Hangul
+        if hangul_count > total_char_count * 0.3:
+            return 'ko'
+
+        # Chinese: significant CJK characters without kana
+        if cjk_ratio > 0.15:
+            return 'zh'
+
+        return 'en'
+
+    def _language_name(self, lang_code):
+        """Convert a language code to a human-readable name for prompts."""
+        names = {
+            'zh': 'Chinese (中文)',
+            'en': 'English',
+            'ja': 'Japanese (日本語)',
+            'ko': 'Korean (한국어)',
+        }
+        return names.get(lang_code, 'English')
 
     def _ensure_blip_loaded(self):
         """Load BLIP models lazily. Returns True if ready, False if unavailable."""
@@ -234,9 +298,13 @@ class ModelManager:
         """
         image = Image.open(image_path).convert("RGB")
 
+        # Detect the query language so the response matches
+        query_lang = self.detect_query_language(query)
+        print(f"[Lang] Detected query language: {query_lang}")
+
         if self.vision_backend == "deepseek+blip":
             if self._ensure_blip_loaded():
-                return self._process_with_deepseek_blip(image, query)
+                return self._process_with_deepseek_blip(image, query, query_lang)
             else:
                 # BLIP not available — use text-only chat
                 return self._chat_with_deepseek(
@@ -246,10 +314,10 @@ class ModelManager:
                     f"you cannot see the image right now."
                 )
         elif self.vision_backend == "gemini":
-            return self._process_with_gemini(image, query)
+            return self._process_with_gemini(image, query, query_lang)
         elif self.vision_backend == "blip":
             if self._ensure_blip_loaded():
-                return self._process_with_blip(image, query)
+                return self._process_with_blip(image, query, query_lang)
             else:
                 return "抱歉，图片分析功能当前不可用。请尝试纯文字提问。"
         else:
@@ -260,7 +328,15 @@ class ModelManager:
         response = self.deepseek_client.chat.completions.create(
             model=self.deepseek_model,
             messages=[
-                {"role": "system", "content": "You are a helpful AI assistant. Respond concisely in plain text without markdown. Match the language of the user's question."},
+                {"role": "system", "content": (
+                    "You are a helpful AI assistant. "
+                    "CRITICAL INSTRUCTION: You MUST respond in the EXACT same language as the user's message. "
+                    "If the user writes in Chinese (中文), respond entirely in Chinese. "
+                    "If the user writes in Japanese (日本語), respond entirely in Japanese. "
+                    "If the user writes in English, respond in English. "
+                    "NEVER mix multiple languages in your response. "
+                    "Respond concisely in plain text without markdown formatting."
+                )},
                 {"role": "user", "content": message}
             ],
             max_tokens=300,
@@ -268,7 +344,7 @@ class ModelManager:
         )
         return response.choices[0].message.content
 
-    def _process_with_deepseek_blip(self, image, query):
+    def _process_with_deepseek_blip(self, image, query, query_lang='en'):
         """
         Hybrid: BLIP understands the image, DeepSeek crafts a natural response.
         DeepSeek text-only API doesn't support image input natively.
@@ -284,13 +360,20 @@ class ModelManager:
         vqa_answer = self.blip_vqa_processor.decode(vqa_out[0], skip_special_tokens=True)
 
         # Step 3: DeepSeek crafts a natural response from BLIP's analysis
+        lang_name = self._language_name(query_lang)
         system_prompt = (
             "You are a helpful AI visual assistant. "
             "You receive an image description and a preliminary answer from a vision system, "
             "plus the user's original question. Your job is to combine this information into "
             "a natural, detailed, and helpful response. "
-            "IMPORTANT: Respond in plain text without markdown formatting. "
-            "Match the language of the user's question."
+            "CRITICAL LANGUAGE INSTRUCTION: You MUST respond in the EXACT same language "
+            "as the user's question. If the user asks in Chinese (中文), respond entirely "
+            "in Chinese. If in Japanese (日本語), respond entirely in Japanese. "
+            "If in English, respond in English. "
+            "The image description and preliminary answer may be in English — you MUST "
+            "translate/integrate them into a response in the USER's language. "
+            "NEVER mix multiple languages in your response. "
+            "IMPORTANT: Respond in plain text without markdown formatting."
         )
 
         user_msg = (
@@ -302,6 +385,7 @@ class ModelManager:
 
         print(f"[DeepSeek+BLIP] Caption: {caption}")
         print(f"[DeepSeek+BLIP] VQA: {vqa_answer}")
+        print(f"[DeepSeek+BLIP] Response language: {lang_name}")
 
         response = self.deepseek_client.chat.completions.create(
             model=self.deepseek_model,
@@ -315,12 +399,19 @@ class ModelManager:
 
         return response.choices[0].message.content
 
-    def _process_with_gemini(self, image, query):
+    def _process_with_gemini(self, image, query, query_lang='en'):
         """Original Gemini-based processing (requires API key)."""
+        lang_name = self._language_name(query_lang)
         prompt = f"""
         You are an AI assistant specialized in analyzing images and providing detailed, accurate answers about them.
 
         Please analyze the image and answer this question: {query}
+
+        CRITICAL LANGUAGE INSTRUCTION: You MUST respond in the EXACT same language as the question.
+        If the question is in Chinese (中文), respond entirely in Chinese.
+        If the question is in Japanese (日本語), respond entirely in Japanese.
+        If the question is in English, respond in English.
+        NEVER mix multiple languages in your response.
 
         Guidelines:
         - Be detailed and descriptive in your explanation
@@ -334,10 +425,11 @@ class ModelManager:
         - For mathematical expressions, write them in a way that can be easily read aloud (e.g., "x squared plus 2x equals 10")
         - Avoid using special characters like asterisks, underscores, dollar signs, or backticks for formatting
         """
+        print(f"[Gemini] Response language: {lang_name}")
         response = self.gemini_model.generate_content([image, prompt])
         return response.text
 
-    def _process_with_blip(self, image, query):
+    def _process_with_blip(self, image, query, query_lang='en'):
         """
         Local BLIP-based processing (free, no API key needed).
         Step 1: Generate a caption of the image.
@@ -354,18 +446,78 @@ class ModelManager:
         vqa_out = self.blip_vqa_model.generate(**vqa_inputs, max_length=30)
         answer = self.blip_vqa_processor.decode(vqa_out[0], skip_special_tokens=True)
 
-        # Build a natural combined response
-        response = (
-            f"I can see {caption}. "
-            f"To answer your question about {query}, {answer}."
-        )
+        # Build a natural combined response in the appropriate language
+        # BLIP outputs are always in English, so translate the template for non-English queries
+        if query_lang == 'zh':
+            response = (
+                f"我看到图片中有{caption}。"
+                f"关于你的问题「{query}」，{answer}。"
+            )
+        elif query_lang == 'ja':
+            response = (
+                f"画像には{caption}が見えます。"
+                f"「{query}」という質問について、{answer}。"
+            )
+        else:
+            response = (
+                f"I can see {caption}. "
+                f"To answer your question about {query}, {answer}."
+            )
 
         print(f"[BLIP] Caption: {caption}")
         print(f"[BLIP] Question: {query}")
         print(f"[BLIP] Answer: {answer}")
+        print(f"[BLIP] Response language: {query_lang}")
 
         return response
     
+    def _translate_text(self, text, target_lang_name):
+        """
+        Translate text to the target language using DeepSeek API.
+        Falls back to original text if DeepSeek is unavailable or translation fails.
+
+        Args:
+            text: Text to translate
+            target_lang_name: Target language name (e.g. 'Chinese', 'Japanese', 'English')
+
+        Returns:
+            Translated text
+        """
+        # If DeepSeek is not available, return original text
+        if not self.use_deepseek:
+            print(f"[Translate] DeepSeek not available, skipping translation to {target_lang_name}")
+            return text
+
+        # Skip translation if text is very short or likely an error message
+        if len(text.strip()) < 3:
+            return text
+
+        try:
+            print(f"[Translate] Translating to {target_lang_name}...")
+            response = self.deepseek_client.chat.completions.create(
+                model=self.deepseek_model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            f"You are a professional translator. "
+                            f"Translate the user's message into {target_lang_name}. "
+                            f"Output ONLY the translated text. Do NOT add any explanations, notes, or markdown. "
+                            f"Keep the same meaning, tone, and style as the original."
+                        )
+                    },
+                    {"role": "user", "content": text}
+                ],
+                max_tokens=500,
+                temperature=0.3
+            )
+            translated = response.choices[0].message.content
+            print(f"[Translate] Translation complete: {len(text)} → {len(translated)} chars")
+            return translated
+        except Exception as e:
+            print(f"[Translate] Translation failed: {e}, using original text")
+            return text
+
     def text_to_speech(self, text, voice='af_heart', speed=1.2):
         """
         Convert text to speech using Kokoro TTS with performance optimizations.
@@ -382,11 +534,32 @@ class ModelManager:
             cleaned_text = clean_text_for_tts(text)
         else:
             cleaned_text = text
-        
+
+        # --- Language-aware translation before TTS ---
+        # Detect the response text language and compare with the voice's target language.
+        # If they differ (e.g. English response + Chinese voice), translate first.
+        original_voice_id = voice
+        voice_lang_code = self._voice_to_lang_code(original_voice_id)
+        target_lang_name = LANG_CODE_TO_NAME.get(voice_lang_code, 'English')
+
+        # Map voice target language to detect_query_language code
+        lang_name_to_detect_code = {
+            'English': 'en', 'Chinese': 'zh', 'Japanese': 'ja',
+            'Spanish': 'en', 'French': 'en', 'Hindi': 'en',
+            'Italian': 'en', 'Portuguese': 'en',
+        }
+        target_detect_code = lang_name_to_detect_code.get(target_lang_name, 'en')
+        response_lang = self.detect_query_language(cleaned_text)
+
+        if response_lang != target_detect_code:
+            print(f"[TTS] Language mismatch: response={response_lang}, voice={target_lang_name}. Translating...")
+            cleaned_text = self._translate_text(cleaned_text, target_lang_name)
+        else:
+            print(f"[TTS] Language match: response={response_lang}, voice={target_lang_name}. No translation needed.")
+
         # Validate that the voice exists
         # IMPORTANT: save original voice_id for lang_code detection
         # (use_voice may be overridden to a file path later)
-        original_voice_id = voice
         voices_dir = os.path.join("app", "backend", "kokoro_assets", "voices", "voices")
         local_voice_path = os.path.join(voices_dir, f"{voice}.pt")
         use_voice = voice
