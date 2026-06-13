@@ -1,5 +1,23 @@
 import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Only show TensorFlow warnings and errors
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+
+# ============================================================
+# Network: bypass broken proxy for direct connections
+# hf-mirror.com + api.deepseek.com work directly (no proxy needed)
+# ============================================================
+os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+os.environ['HF_HUB_ENABLE_HF_TRANSFER'] = '0'
+
+import urllib.request as _ur
+_ur.getproxies = lambda: {}
+
+for _pv in ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy',
+            'ALL_PROXY', 'all_proxy']:
+    os.environ.pop(_pv, None)
+os.environ['no_proxy'] = '*'
+os.environ['NO_PROXY'] = '*'
+# ============================================================
+
 import threading
 import atexit
 from app.backend.services.flask_app import app as flask_app

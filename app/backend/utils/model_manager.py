@@ -1,7 +1,9 @@
 import os
 import torch
-import google.generativeai as genai
-from transformers import WhisperProcessor, WhisperForConditionalGeneration
+import base64
+import io
+from transformers import WhisperProcessor, WhisperForConditionalGeneration, BlipProcessor, BlipForQuestionAnswering, BlipForConditionalGeneration
+from openai import OpenAI
 import soundfile as sf
 from PIL import Image
 import numpy as np
@@ -15,6 +17,13 @@ import re
 import concurrent.futures
 from app.backend.utils.kokoro_voices import AVAILABLE_VOICES, VOICES_BY_LANGUAGE
 from app.backend.utils.text_utils import clean_text_for_tts
+
+# Try to import Gemini, but it's optional
+try:
+    import google.generativeai as genai
+    HAS_GEMINI = True
+except ImportError:
+    HAS_GEMINI = False
 
 # Load environment variables
 load_dotenv()
@@ -77,33 +86,103 @@ class ModelManager:
     def __init__(self, upload_folder=None):
         """Initialize the model manager with all required models."""
         self.upload_folder = upload_folder if upload_folder else config.get("UPLOAD_FOLDER", "app/uploads")
-        # Configure Google API
-        api_key = config.get("GOOGLE_API_KEY")
-        if not api_key:
-            raise ValueError("GOOGLE_API_KEY is not set in .env file")
-        genai.configure(api_key=api_key)
+
+        # --- Vision model setup ---
+        # Priority: DeepSeek (text) + BLIP (vision) > Gemini > pure BLIP
+        deepseek_key = config.get("DEEPSEEK_API_KEY", "")
+        gemini_key = config.get("GOOGLE_API_KEY", "")
+
+        self.use_deepseek = bool(deepseek_key and deepseek_key not in ("your_deepseek_api_key_here", "sk-your-deepseek-api-key"))
+        self.use_gemini = HAS_GEMINI and bool(gemini_key and gemini_key != "your_google_api_key_here") and not self.use_deepseek
+
+        self.vision_backend = None
+        self.blip_loaded = False
+        self.blip_load_failed = False
+
+        if self.use_deepseek:
+            self.deepseek_client = OpenAI(
+                api_key=deepseek_key,
+                base_url="https://api.deepseek.com"
+            )
+            self.deepseek_model = config.get("DEEPSEEK_MODEL", "deepseek-chat")
+            self.vision_backend = "deepseek+blip"
+            print(f"[Vision] DeepSeek + BLIP (lazy-load)")
+
+        elif self.use_gemini:
+            genai.configure(api_key=gemini_key)
+            gemini_model_name = config.get("GEMINI_MODEL", "gemini-2.5-flash-preview-05-20")
+            self.gemini_model = genai.GenerativeModel(gemini_model_name)
+            self.vision_backend = "gemini"
+            print("[Vision] Gemini API mode")
+        else:
+            self.vision_backend = "blip"
+            print("[Vision] Local BLIP (lazy-load)")
 
         # Initialize Whisper model for STT
         stt_model_name = config.get("STT_MODEL", "openai/whisper-tiny")
+        print("[ASR] Loading Whisper STT model...")
         self.stt_processor = WhisperProcessor.from_pretrained(stt_model_name)
         self.stt_model = WhisperForConditionalGeneration.from_pretrained(stt_model_name)
 
         # Ensure Kokoro model files are present (auto-download if missing)
         kokoro_model_dir = config.get("KOKORO_ASSETS_DIR", "app/backend/kokoro_assets")
         model_path, config_path, voices_dir = ensure_kokoro_assets(model_dir=kokoro_model_dir)
-        # Set KOKORO_PATH env var for Kokoro to find its assets
         os.environ["KOKORO_PATH"] = os.path.abspath(kokoro_model_dir)
-        # Initialize Kokoro TTS pipeline
-        kokoro_repo_id = config.get("KOKORO_REPO_ID", "hexgrad/Kokoro-82M")
-        self.kokoro_pipeline = KPipeline(
-            lang_code='a',
-            repo_id=kokoro_repo_id
-        )
+        self.kokoro_repo_id = config.get("KOKORO_REPO_ID", "hexgrad/Kokoro-82M")
 
-        # Configure Gemini model
-        gemini_model_name = config.get("GEMINI_MODEL", "gemini-2.5-flash-preview-05-20")
-        self.gemini_model = genai.GenerativeModel(gemini_model_name)
-        print("All models loaded successfully")
+        # Multi-language TTS pipeline cache
+        # Voice ID first letter = language code: a=AmE, b=BrE, j=Japanese, z=Mandarin, e=Spanish, f=French, h=Hindi, i=Italian, p=Portuguese
+        self._kokoro_pipelines = {}
+
+        # Pre-warm the English pipeline (most common)
+        self._get_kokoro_pipeline('a')
+        print("[TTS] Kokoro model ready (multi-language)")
+        print(f"All models loaded! (vision: {self.vision_backend})")
+
+    def _get_kokoro_pipeline(self, lang_code):
+        """Get or create a Kokoro pipeline for the given language code.
+        Reuses the existing model to avoid additional network downloads."""
+        if lang_code not in self._kokoro_pipelines:
+            print(f"[TTS] Loading Kokoro pipeline for lang_code='{lang_code}'")
+            # Reuse already-loaded model from any existing pipeline to avoid HF download
+            existing_model = None
+            for p in self._kokoro_pipelines.values():
+                if p.model is not None:
+                    existing_model = p.model
+                    break
+            self._kokoro_pipelines[lang_code] = KPipeline(
+                lang_code=lang_code,
+                repo_id=self.kokoro_repo_id,
+                model=existing_model if existing_model else True
+            )
+        return self._kokoro_pipelines[lang_code]
+
+    def _voice_to_lang_code(self, voice_id):
+        """Extract language code from voice ID. First letter = lang_code."""
+        if not voice_id or len(voice_id) < 2:
+            return 'a'
+        return voice_id[0]
+
+    def _ensure_blip_loaded(self):
+        """Load BLIP models lazily. Returns True if ready, False if unavailable."""
+        if self.blip_loaded:
+            return True
+        if self.blip_load_failed:
+            return False
+        try:
+            print("[Vision] Loading BLIP models from local cache...")
+            self.blip_vqa_processor = BlipProcessor.from_pretrained("Salesforce/blip-vqa-base", local_files_only=True)
+            self.blip_vqa_model = BlipForQuestionAnswering.from_pretrained("Salesforce/blip-vqa-base", local_files_only=True)
+            self.blip_caption_processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base", local_files_only=True)
+            self.blip_caption_model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base", local_files_only=True)
+            self.blip_loaded = True
+            print("[Vision] BLIP models loaded!")
+            return True
+        except Exception as e:
+            self.blip_load_failed = True
+            print(f"[Vision] BLIP unavailable: {e}")
+            print("[Vision] Image mode disabled — text chat mode active!")
+            return False
 
     def transcribe_audio(self, audio_path):
         """
@@ -126,11 +205,9 @@ class ModelManager:
         
         # Process audio with Whisper
         input_features = self.stt_processor(
-            audio_array, 
-            sampling_rate=sampling_rate, 
-            return_tensors="pt",
-            # Explicitly set language to English to address the warning
-            language="en"
+            audio_array,
+            sampling_rate=sampling_rate,
+            return_tensors="pt"
         ).input_features
 
         # Pad or truncate input_features to length 3000 (required by Whisper)
@@ -153,24 +230,98 @@ class ModelManager:
     
     def process_image_and_query(self, image_path, query):
         """
-        Process an image and a query using Gemini model.
-        
-        Args:
-            image_path: Path to the image file
-            query: Text query about the image
-            
-        Returns:
-            Response text from Gemini
+        Process an image and a query, or fall back to text-only chat.
         """
-        # Open and prepare the image
-        image = Image.open(image_path)
-        
-        # Create detailed instruction prompt
+        image = Image.open(image_path).convert("RGB")
+
+        if self.vision_backend == "deepseek+blip":
+            if self._ensure_blip_loaded():
+                return self._process_with_deepseek_blip(image, query)
+            else:
+                # BLIP not available — use text-only chat
+                return self._chat_with_deepseek(
+                    f"The user uploaded an image and asked: {query}. "
+                    f"Image analysis is currently unavailable. Please respond helpfully "
+                    f"to their question based on what you know, and let them know "
+                    f"you cannot see the image right now."
+                )
+        elif self.vision_backend == "gemini":
+            return self._process_with_gemini(image, query)
+        elif self.vision_backend == "blip":
+            if self._ensure_blip_loaded():
+                return self._process_with_blip(image, query)
+            else:
+                return "抱歉，图片分析功能当前不可用。请尝试纯文字提问。"
+        else:
+            return "系统未配置视觉模型。"
+
+    def _chat_with_deepseek(self, message):
+        """Pure text chat with DeepSeek (no image)."""
+        response = self.deepseek_client.chat.completions.create(
+            model=self.deepseek_model,
+            messages=[
+                {"role": "system", "content": "You are a helpful AI assistant. Respond concisely in plain text without markdown. Match the language of the user's question."},
+                {"role": "user", "content": message}
+            ],
+            max_tokens=300,
+            temperature=0.7
+        )
+        return response.choices[0].message.content
+
+    def _process_with_deepseek_blip(self, image, query):
+        """
+        Hybrid: BLIP understands the image, DeepSeek crafts a natural response.
+        DeepSeek text-only API doesn't support image input natively.
+        """
+        # Step 1: BLIP caption the image
+        caption_inputs = self.blip_caption_processor(image, return_tensors="pt")
+        caption_out = self.blip_caption_model.generate(**caption_inputs, max_length=50)
+        caption = self.blip_caption_processor.decode(caption_out[0], skip_special_tokens=True)
+
+        # Step 2: BLIP VQA
+        vqa_inputs = self.blip_vqa_processor(image, query, return_tensors="pt")
+        vqa_out = self.blip_vqa_model.generate(**vqa_inputs, max_length=30)
+        vqa_answer = self.blip_vqa_processor.decode(vqa_out[0], skip_special_tokens=True)
+
+        # Step 3: DeepSeek crafts a natural response from BLIP's analysis
+        system_prompt = (
+            "You are a helpful AI visual assistant. "
+            "You receive an image description and a preliminary answer from a vision system, "
+            "plus the user's original question. Your job is to combine this information into "
+            "a natural, detailed, and helpful response. "
+            "IMPORTANT: Respond in plain text without markdown formatting. "
+            "Match the language of the user's question."
+        )
+
+        user_msg = (
+            f"User asked: {query}\n\n"
+            f"Image description: {caption}\n\n"
+            f"Preliminary analysis: {vqa_answer}\n\n"
+            f"Please provide a natural, detailed response combining this information."
+        )
+
+        print(f"[DeepSeek+BLIP] Caption: {caption}")
+        print(f"[DeepSeek+BLIP] VQA: {vqa_answer}")
+
+        response = self.deepseek_client.chat.completions.create(
+            model=self.deepseek_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_msg}
+            ],
+            max_tokens=300,
+            temperature=0.7
+        )
+
+        return response.choices[0].message.content
+
+    def _process_with_gemini(self, image, query):
+        """Original Gemini-based processing (requires API key)."""
         prompt = f"""
         You are an AI assistant specialized in analyzing images and providing detailed, accurate answers about them.
-        
+
         Please analyze the image and answer this question: {query}
-        
+
         Guidelines:
         - Be detailed and descriptive in your explanation
         - If the answer is not apparent from the image, acknowledge the limitation
@@ -183,14 +334,37 @@ class ModelManager:
         - For mathematical expressions, write them in a way that can be easily read aloud (e.g., "x squared plus 2x equals 10")
         - Avoid using special characters like asterisks, underscores, dollar signs, or backticks for formatting
         """
-        
-        # Prepare content for Gemini (image + text)
-        response = self.gemini_model.generate_content([
-            image,
-            prompt
-        ])
-        
+        response = self.gemini_model.generate_content([image, prompt])
         return response.text
+
+    def _process_with_blip(self, image, query):
+        """
+        Local BLIP-based processing (free, no API key needed).
+        Step 1: Generate a caption of the image.
+        Step 2: Answer the specific question using VQA.
+        Combines both into a natural response.
+        """
+        # Step 1: Generate image caption
+        caption_inputs = self.blip_caption_processor(image, return_tensors="pt")
+        caption_out = self.blip_caption_model.generate(**caption_inputs, max_length=50)
+        caption = self.blip_caption_processor.decode(caption_out[0], skip_special_tokens=True)
+
+        # Step 2: Visual Question Answering
+        vqa_inputs = self.blip_vqa_processor(image, query, return_tensors="pt")
+        vqa_out = self.blip_vqa_model.generate(**vqa_inputs, max_length=30)
+        answer = self.blip_vqa_processor.decode(vqa_out[0], skip_special_tokens=True)
+
+        # Build a natural combined response
+        response = (
+            f"I can see {caption}. "
+            f"To answer your question about {query}, {answer}."
+        )
+
+        print(f"[BLIP] Caption: {caption}")
+        print(f"[BLIP] Question: {query}")
+        print(f"[BLIP] Answer: {answer}")
+
+        return response
     
     def text_to_speech(self, text, voice='af_heart', speed=1.2):
         """
@@ -210,6 +384,9 @@ class ModelManager:
             cleaned_text = text
         
         # Validate that the voice exists
+        # IMPORTANT: save original voice_id for lang_code detection
+        # (use_voice may be overridden to a file path later)
+        original_voice_id = voice
         voices_dir = os.path.join("app", "backend", "kokoro_assets", "voices", "voices")
         local_voice_path = os.path.join(voices_dir, f"{voice}.pt")
         use_voice = voice
@@ -220,13 +397,14 @@ class ModelManager:
             if voice not in AVAILABLE_VOICES:
                 print(f"Warning: Voice '{voice}' not found in AVAILABLE_VOICES. Falling back to 'af_heart'.")
                 use_voice = 'af_heart'
+                original_voice_id = 'af_heart'
             else:
                 print(f"[TTS] Local voice file not found for '{voice}'. Will attempt to download or use default Kokoro behavior.")
         
         # For shorter texts, process as a single chunk - increased threshold to improve reliability
         if len(cleaned_text) < 150:
             try:
-                generator = self.kokoro_pipeline(cleaned_text, voice=use_voice, speed=speed)
+                generator = self._get_kokoro_pipeline(self._voice_to_lang_code(original_voice_id))(cleaned_text, voice=use_voice, speed=speed)
                 audio_chunks = []
                 for _, _, audio in generator:
                     audio_chunks.append(audio)
@@ -236,7 +414,7 @@ class ModelManager:
             except Exception as e:
                 print(f"Error in single-chunk TTS processing: {str(e)}")
                 # Fallback to non-parallel processing for troublesome text
-                return self._fallback_tts(cleaned_text, use_voice, speed)
+                return self._fallback_tts(cleaned_text, use_voice, speed, voice_id=original_voice_id)
         else:
             try:
                 # Create proper chunks that won't cause the RuntimeError in espeak
@@ -275,7 +453,7 @@ class ModelManager:
                 
                 # If we have problematic small chunks, process sequentially
                 if any(len(chunk) < 5 for chunk in text_chunks) or len(text_chunks) == 1:
-                    return self._fallback_tts(cleaned_text, use_voice, speed)
+                    return self._fallback_tts(cleaned_text, use_voice, speed, voice_id=original_voice_id)
                 
                 # Process chunks in parallel with error handling
                 all_audio_chunks = []
@@ -283,7 +461,7 @@ class ModelManager:
                 def process_chunk(chunk):
                     try:
                         chunk_audio_parts = []
-                        generator = self.kokoro_pipeline(chunk, voice=use_voice, speed=speed)
+                        generator = self._get_kokoro_pipeline(self._voice_to_lang_code(original_voice_id))(chunk, voice=use_voice, speed=speed)
                         for _, _, audio in generator:
                             chunk_audio_parts.append(audio)
                         if chunk_audio_parts:
@@ -311,7 +489,7 @@ class ModelManager:
                 # If parallel processing failed, fall back to sequential
                 if not all_audio_chunks:
                     print("Parallel processing failed, falling back to sequential processing")
-                    return self._fallback_tts(cleaned_text, use_voice, speed)
+                    return self._fallback_tts(cleaned_text, use_voice, speed, voice_id=original_voice_id)
                     
                 # Concatenate all processed chunks
                 full_audio = np.concatenate(all_audio_chunks)
@@ -319,7 +497,7 @@ class ModelManager:
             except Exception as e:
                 print(f"Error in parallel TTS processing: {str(e)}")
                 # Fallback to sequential processing
-                return self._fallback_tts(cleaned_text, use_voice, speed)
+                return self._fallback_tts(cleaned_text, use_voice, speed, voice_id=original_voice_id)
         
         # Use a lower sample rate for faster processing (was 24000)
         output_sample_rate = 22050  # Still good quality but slightly faster
@@ -329,23 +507,26 @@ class ModelManager:
         sf.write(output_path, full_audio, output_sample_rate)
         return output_filename
     
-    def _fallback_tts(self, text, voice, speed):
+    def _fallback_tts(self, text, voice, speed, voice_id=None):
         """
         Fallback method for text-to-speech that processes the entire text sequentially.
         Used when parallel processing fails.
-        
+
         Args:
             text: Text to convert to speech
-            voice: Voice name to use
+            voice: Voice name or file path
             speed: Speech speed
-            
+            voice_id: Original voice ID for language detection (if voice is a file path)
+
         Returns:
             Path to the generated audio file
         """
+        # Use voice_id for language detection if provided, otherwise use voice
+        lang_voice = voice_id if voice_id else voice
         print(f"[TTS] Using fallback sequential processing for text of length {len(text)}")
         try:
             # Process the entire text as a single unit
-            generator = self.kokoro_pipeline(text, voice=voice, speed=speed)
+            generator = self._get_kokoro_pipeline(self._voice_to_lang_code(lang_voice))(text, voice=voice, speed=speed)
             audio_chunks = []
             for _, _, audio in generator:
                 audio_chunks.append(audio)
@@ -358,7 +539,7 @@ class ModelManager:
                         continue
                         
                     try:
-                        gen = self.kokoro_pipeline(sentence, voice=voice, speed=speed)
+                        gen = self._get_kokoro_pipeline(self._voice_to_lang_code(lang_voice))(sentence, voice=voice, speed=speed)
                         for _, _, audio in gen:
                             audio_chunks.append(audio)
                     except Exception as e:
@@ -375,8 +556,9 @@ class ModelManager:
                 return output_filename
                 
             # As a last resort, generate a very simple message
-            gen = self.kokoro_pipeline("I'm sorry, I couldn't generate audio for this response.", 
-                                      voice=voice, speed=speed)
+            gen = self._get_kokoro_pipeline(self._voice_to_lang_code(lang_voice))(
+                "I'm sorry, I couldn't generate audio for this response.",
+                voice=voice, speed=speed)
             error_chunks = []
             for _, _, audio in gen:
                 error_chunks.append(audio)
