@@ -1,27 +1,22 @@
-# 🧠 Multimodal AI Visual Assistant
+# Multimodal AI Visual Assistant
 
-A full-stack, production-grade multimodal AI assistant that enables users to interact with images using natural language and voice. Get instant, multilingual spoken answers powered by state-of-the-art AI models.
+A full-stack multimodal AI assistant that enables users to interact with images using natural language and voice. Upload an image, ask a question by voice, and get a spoken answer — all in your preferred language.
 
-## 🚀 Features
+## Features
 
-- **Image Upload & Analysis**: Ask questions about any image using your voice.
+- **Image Upload & Analysis**: Upload any image and ask questions about it by voice.
 - **Voice Input & Transcription**: Record queries, transcribed in real-time with OpenAI Whisper.
-- **Advanced Multimodal Reasoning**: Google Gemini 2.5 Flash analyzes images and queries for detailed, factual answers.
-- **Multilingual Voice Output**: Hear responses in your chosen language, accent, and gender using Kokoro TTS.
-- **Voice Customization**: Select from dozens of voices (male/female), languages, and adjust speech rate.
-- **Accessible, Responsive UI**: Gradio interface designed for keyboard navigation, screen readers, and all devices.
-- **Automated Asset Management**: All TTS models and voices are auto-downloaded on first run.
-- **Robust Error Handling**: User-friendly error messages and backend logging.
-- **Comprehensive Testing**: Pytest suite covers backend, frontend, and model logic.
+- **Hybrid Vision Reasoning**: BLIP vision models extract image features locally, DeepSeek API crafts natural language responses. Falls back to Gemini or pure local BLIP.
+- **Multilingual Voice Output**: Kokoro TTS generates speech in 8 languages with 63 voices.
+- **Language-Aware Responses**: AI automatically responds in the same language as your question. TTS translates responses when voice language differs.
+- **Voice Customization**: Select language, voice style, and speech rate.
+- **Automated Asset Management**: All models and voices auto-download on first run.
 
-## 📸 Screenshots
-
-Below are some screenshots of the application in action. (Add your images to the `assets/` directory and reference them here.)
+## Screenshots
 
 ![Main UI](assets/UI_demo.png)
-![Example](assets/example_demo.png)
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 User
@@ -35,27 +30,30 @@ Flask API (app/backend/services/flask_app.py)
   ▼
 ModelManager (app/backend/utils/model_manager.py)
   ├─ Whisper (Speech-to-Text)
-  ├─ Gemini (Image+Text Reasoning)
+  ├─ BLIP + DeepSeek / Gemini (Image+Text Reasoning)
   └─ Kokoro TTS (Text-to-Speech)
 ```
 
-- **Concurrent Backend & Frontend**: Both run together via `main.py` (threaded).
-- **All assets and models are managed automatically.**
+- Flask backend runs as a daemon thread, Gradio UI in the main thread.
+- Vision backend priority: DeepSeek+BLIP > Gemini > pure BLIP (configurable via `.env`).
 
-## 🌍 Supported Languages & Voices
+## Supported Languages & Voices
 
-- **English** (American, British,): Multiple male/female voices
-- **Japanese**: Male/female voices
-- **Mandarin Chinese**: Multiple voices
-- **French**: Female voice
-- **Spanish**: Male/female voices
-- **Italian**: Male/female voices
-- **Brazilian Portuguese**: Male/female voices
-- **Hindi**: Male/female voices
+| Language | Voices |
+|----------|--------|
+| American English | 11 female, 8 male |
+| British English | 4 female, 4 male |
+| Japanese | 4 female, 1 male |
+| Mandarin Chinese | 4 female, 4 male |
+| Spanish | 1 female, 2 male |
+| French | 1 female |
+| Hindi | 2 female, 2 male |
+| Italian | 1 female, 1 male |
+| Brazilian Portuguese | 1 female, 2 male |
 
-See [`app/backend/utils/kokoro_voices.py`](app/backend/utils/kokoro_voices.py) for the full list.
+See [`kokoro_voices.py`](app/backend/utils/kokoro_voices.py) for the full list.
 
-## 🛠️ Installation
+## Installation
 
 1. **Clone the repository:**
    ```bash
@@ -66,8 +64,8 @@ See [`app/backend/utils/kokoro_voices.py`](app/backend/utils/kokoro_voices.py) f
 2. **Create and activate a virtual environment:**
    ```bash
    python -m venv .venv
-   .venv\Scripts\activate  # On Windows
-   source .venv/bin/activate  # On macOS/Linux
+   .venv\Scripts\activate     # Windows
+   source .venv/bin/activate   # macOS / Linux
    ```
 
 3. **Install dependencies:**
@@ -76,109 +74,69 @@ See [`app/backend/utils/kokoro_voices.py`](app/backend/utils/kokoro_voices.py) f
    ```
 
 4. **Configure environment variables:**
-   - Copy `.env.example` to `.env` and fill in your Google API key and Flask secret.
-   - **All configuration variables (API keys, model names, upload folders, etc.) are loaded exclusively from the `.env` file in the root directory.**
-   - The application does **not** read configuration from system environment variables—**all configuration must be set in `.env`**.
-   - All model assets will be auto-downloaded.
+   ```bash
+   cp .env.example .env
+   ```
+   Edit `.env` and set your `DEEPSEEK_API_KEY` (or `GOOGLE_API_KEY`). All configuration is read from `.env` only.
 
-5. **Run the application:**
+5. **Download BLIP models (one-time, ~800MB):**
+   ```bash
+   python download_blip_models.py
+   ```
+
+6. **Run the application:**
    ```bash
    python main.py
    ```
-   - Access the UI at [http://localhost:7860](http://localhost:7860)
+   Open [http://localhost:7860](http://localhost:7860) in your browser.
 
-## 🗂️ Project Structure
+## Configuration
+
+All settings in `.env`:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `DEEPSEEK_API_KEY` | DeepSeek API key (enables hybrid vision mode) | — |
+| `DEEPSEEK_BASE_URL` | Custom API base URL (e.g. SiliconFlow) | `https://api.deepseek.com` |
+| `DEEPSEEK_MODEL` | Model name | `deepseek-chat` |
+| `GOOGLE_API_KEY` | Gemini API key (fallback) | — |
+| `FLASK_SECRET_KEY` | Flask session secret | — |
+| `UPLOAD_FOLDER` | Upload directory | `app/uploads` |
+
+## Project Structure
 
 ```
-Multimodal_AI/
 ├── app/
 │   ├── backend/
 │   │   ├── services/           # Flask API endpoints
-│   │   ├── utils/              # Model management, voice metadata, text utils
-│   │   └── kokoro_assets/      # TTS model assets (auto-downloaded)
-│   ├── frontend/               # Gradio UI implementation
-│   └── uploads/                # Uploaded files (auto-cleaned)
-├── assets/                     # Screenshots and static assets
-├── tests/                      # Test suite (API, UI, models)
-├── .env, .env.example          # Environment variables
-├── .gitignore                  # Git ignore file
-├── LICENSE                     # MIT License
-├── main.py                     # Application entry point
-├── README.md                   # Project documentation
-├── requirements.txt            # Python dependencies
+│   │   └── utils/              # ModelManager, voices, text utils
+│   ├── frontend/               # Gradio UI
+│   └── uploads/                # Temp files (auto-cleaned)
+├── assets/                     # Screenshots
+├── tests/                      # Pytest suite
+├── main.py                     # Entry point
+├── download_blip_models.py     # BLIP model downloader
+├── download_unidic.py          # Japanese dictionary downloader
+└── requirements.txt
 ```
 
-- All code is modular and organized for clarity and extensibility.
-- The `assets/` directory is the recommended place for screenshots and static files.
+## Testing
 
-## 🧪 Testing
-
-Run all tests with:
 ```bash
 pytest
 ```
-- Tests cover API endpoints, UI workflow, and model logic.
-- Test data and assets are auto-managed and cleaned up.
 
-## ♿ Accessibility & UX
+Tests cover API endpoints, model logic, and UI workflow with mocked ML dependencies.
 
-- **Keyboard navigation** and **screen reader** support.
-- **High color contrast** and **responsive design**.
-- **Clear feedback** for all user actions and errors.
-- **Semantic HTML** and ARIA attributes for assistive technologies.
-- **Resizable text** and mobile-friendly layout.
+## License
 
-## 🔒 Security
+MIT License. See [LICENSE](LICENSE) for details.
 
-- **No secrets in code**—all credentials via `.env`.
-- **All configuration is managed via the `.env` file only. System environment variables are not used for configuration.**
-- **Strict file upload validation** and privacy cleanup.
-- **Sensitive/model files are git-ignored.**
-- **API key management** and environment-based configuration.
-
-## 🧩 Extensibility
-
-- Add new voices/languages by updating `kokoro_voices.py`.
-- Swap or extend models via `ModelManager` and configure them in `.env`.
-- **All configuration is centralized in `.env` for easy reproducibility and sharing.**
-- Modular, testable codebase for rapid prototyping.
-
-## ✨ Why This Project Stands Out
-
-- **End-to-end AI workflow**: From voice to vision to speech, all in one app.
-- **Production best practices**: Security, error handling, accessibility, and testing.
-- **Portfolio-ready**: Demonstrates full-stack AI, modern Python, and real-world deployment skills.
-- **Comprehensive documentation and code comments** for maintainability.
-- **Automated asset management** for seamless setup.
-
-## 🚀 Future Enhancements
-
-- Add support for additional languages and regional accents in TTS and STT.
-- Implement real-time streaming responses for faster feedback.
-- Develop a mobile-friendly or native mobile UI.
-- Integrate more advanced image analysis models (e.g., OCR, object detection).
-- Add user authentication and personalized settings.
-- Enable cloud deployment with scalable infrastructure.
-- Provide downloadable audio/text transcripts for user queries.
-- Add progress indicators and better feedback for long-running operations.
-- Expand accessibility features (e.g., high-contrast mode, localization).
-
-## 📄 License
-
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
+## Acknowledgments
 
 - [OpenAI Whisper](https://huggingface.co/openai/whisper-tiny)
-- [Google Gemini](https://ai.google.dev/)
+- [DeepSeek](https://platform.deepseek.com)
+- [BLIP](https://huggingface.co/Salesforce/blip-vqa-base)
 - [Kokoro TTS](https://github.com/hexgrad/Kokoro)
-- [Gradio](https://gradio.app/)
-- [Flask](https://flask.palletsprojects.com/)
-
-## 📬 Contact
-For questions or feedback, please reach out via:
-
-- **GitHub:** [chonglangchen](https://github.com/chonglangchen)
-- **Email:** [chen19359373970@gmail.com](mailto:chen19359373970@gmail.com)
-
----
+- [Gradio](https://gradio.app)
+- [Flask](https://flask.palletsprojects.com)
