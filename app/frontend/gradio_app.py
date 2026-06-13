@@ -147,45 +147,45 @@ def launch_gradio():
     # Create Gradio interface
     with gr.Blocks(title="AI 视觉语音助手", theme=gr.themes.Soft()) as iface:
         gr.Markdown(
-            "<h1 style='text-align: center; margin-bottom: 0.5em;'>🎤 AI 视觉语音助手</h1>",
+            "<h1 style='text-align: center; margin-bottom: 0.25em; font-weight: 400;'>AI 视觉语音助手</h1>",
             elem_id="app-title"
         )
         gr.Markdown(
-            "<div style='text-align: center; font-size: 1.2em; margin-bottom: 1.5em;'>"
-            "上传图片 → 语音提问 → AI 分析图片 → 语音回答"
+            "<div style='text-align: center; color: #666; margin-bottom: 2em;'>"
+            "上传图片 · 语音提问 · AI 分析 · 语音回答"
             "</div>"
         )
 
         with gr.Row():
             with gr.Column(scale=1):
                 image_input = gr.Image(
-                    label="① 上传图片",
+                    label="上传图片",
                     type="filepath",
                     height=300
                 )
 
                 audio_input = gr.Audio(
-                    label="② 录音提问（点击🎤开始/停止）",
+                    label="录音提问",
                     type="filepath",
                     sources=["microphone"]
                 )
 
                 transcription_output = gr.Textbox(
-                    label="识别出的问题",
-                    placeholder="录音后这里会显示识别结果..."
+                    label="识别结果",
+                    placeholder="录音后将自动显示识别内容..."
                 )
 
-                process_btn = gr.Button("③ 提交分析", variant="primary", size="lg")
+                process_btn = gr.Button("提交分析", variant="primary", size="lg")
 
             with gr.Column(scale=1):
                 response_output = gr.Textbox(
                     label="AI 回答",
-                    placeholder="AI 分析结果会显示在这里...",
+                    placeholder="分析结果将显示在这里...",
                     lines=5
                 )
 
                 with gr.Group():
-                    gr.Markdown("### 🔊 语音设置")
+                    gr.Markdown("### 语音设置")
                     with gr.Row():
                         language_dropdown = gr.Dropdown(
                             choices=languages_sorted,
@@ -209,10 +209,10 @@ def launch_gradio():
                             value=1.0,
                             step=0.1,
                             label="语速",
-                            info="调整语速 (0.5=慢, 2.0=快)"
+                            info="调整语速"
                         )
 
-                audio_btn = gr.Button("④ 生成语音回复", variant="secondary", size="lg")
+                audio_btn = gr.Button("生成语音回复", variant="secondary", size="lg")
                 audio_output = gr.Audio(label="语音回复")
 
         # --- Event handlers ---
@@ -244,22 +244,22 @@ def launch_gradio():
         # Info section
         with gr.Row():
             with gr.Column(scale=1):
-                gr.Markdown("## 📋 使用步骤")
+                gr.Markdown("## 使用步骤")
                 gr.Markdown("""
-                1. **上传一张图片** — 拖拽或点击上传
-                2. **点击麦克风录音** — 说出你的问题（支持中英文）
-                3. 录音结束后 **自动转写成文字**
-                4. 点击 **提交分析** — AI 识别图片并回答
-                5. **选择语言和声音** — 中文/英文/日语等8种语言
-                6. 点击 **生成语音回复** — 听到 AI 语音回答
+                1. 上传图片 — 拖拽或点击上传
+                2. 点击麦克风录音 — 说出你的问题
+                3. 录音结束后自动转写成文字
+                4. 点击提交分析 — AI 识别图片并回答
+                5. 选择语言和声音 — 支持 8 种语言
+                6. 点击生成语音回复 — 收听 AI 语音回答
                 """)
             with gr.Column(scale=1):
-                gr.Markdown("## ⚙️ 技术架构")
+                gr.Markdown("## 技术架构")
                 gr.Markdown("""
-                - **语音识别**: OpenAI Whisper 本地运行，自动识别中英文
-                - **图像理解**: BLIP 视觉模型 (~2.4GB) 本地分析
-                - **智能对话**: DeepSeek API 生成自然语言回复
-                - **语音合成**: Kokoro TTS 多语言引擎，8种语言63种声音
+                - 语音识别 — Whisper 本地运行，自动识别中英文
+                - 图像理解 — BLIP 视觉模型本地分析
+                - 智能对话 — DeepSeek 生成自然语言回复
+                - 语音合成 — Kokoro TTS 多语言引擎，8 种语言 63 种声音
                 """)
 
     # Launch the interface
