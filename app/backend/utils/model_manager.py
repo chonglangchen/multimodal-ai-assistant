@@ -142,20 +142,29 @@ class ModelManager:
 
     def _get_kokoro_pipeline(self, lang_code):
         """Get or create a Kokoro pipeline for the given language code.
-        Reuses the existing model to avoid additional network downloads."""
+        Reuses the existing model to avoid additional network downloads.
+        Falls back to English ('a') if the requested language dependencies are missing."""
         if lang_code not in self._kokoro_pipelines:
             print(f"[TTS] Loading Kokoro pipeline for lang_code='{lang_code}'")
-            # Reuse already-loaded model from any existing pipeline to avoid HF download
-            existing_model = None
-            for p in self._kokoro_pipelines.values():
-                if p.model is not None:
-                    existing_model = p.model
-                    break
-            self._kokoro_pipelines[lang_code] = KPipeline(
-                lang_code=lang_code,
-                repo_id=self.kokoro_repo_id,
-                model=existing_model if existing_model else True
-            )
+            try:
+                # Reuse already-loaded model from any existing pipeline to avoid HF download
+                existing_model = None
+                for p in self._kokoro_pipelines.values():
+                    if p.model is not None:
+                        existing_model = p.model
+                        break
+                self._kokoro_pipelines[lang_code] = KPipeline(
+                    lang_code=lang_code,
+                    repo_id=self.kokoro_repo_id,
+                    model=existing_model if existing_model else True
+                )
+            except (ModuleNotFoundError, RuntimeError) as e:
+                print(f"[TTS] Failed to load pipeline for lang_code='{lang_code}': {e}")
+                if lang_code != 'a':
+                    print(f"[TTS] Falling back to English ('a') pipeline")
+                    return self._get_kokoro_pipeline('a')
+                else:
+                    raise
         return self._kokoro_pipelines[lang_code]
 
     def _voice_to_lang_code(self, voice_id):

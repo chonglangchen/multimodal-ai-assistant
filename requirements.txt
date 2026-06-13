@@ -13,6 +13,13 @@ transformers==4.38.2   # Hugging Face Transformers (Whisper, etc.)
 torch==2.2.1           # PyTorch (required for models)
 google-generativeai==0.3.2 # Google Gemini API client
 kokoro>=0.9.2          # Kokoro TTS/STT model (custom)
+# Japanese TTS dependencies (required for Kokoro Japanese voices)
+pyopenjtalk>=0.4.1     # OpenJTalk Python bindings
+fugashi>=1.5.2          # Japanese morphological analyzer (MeCab wrapper)
+unidic>=1.1.0           # Japanese dictionary for fugashi
+jaconv>=0.5.0           # Japanese character conversion
+cutlet>=0.5.0           # Japanese romanization
+mojimoji>=0.0.13        # Japanese character width conversion
 sentencepiece==0.1.99  # Tokenizer for Whisper/Transformers
 scipy==1.11.1          # Scientific computing (resampling, etc.)
 numpy==1.26.4          # Numerical operations
