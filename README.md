@@ -59,8 +59,8 @@ See [`app/backend/utils/kokoro_voices.py`](app/backend/utils/kokoro_voices.py) f
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/EvanGks/vision-voice-multimodal-app.git
-   cd multimodal-ai
+   git clone https://github.com/chonglangchen/ai-visual-assistant.git
+   cd ai-visual-assistant
    ```
 
 2. **Create and activate a virtual environment:**
@@ -165,7 +165,7 @@ pytest
 
 ## 📄 License
 
-This project is licensed under the MIT License (c) 2025 Evan GKS. See the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
 ## 🙏 Acknowledgments
 
@@ -178,10 +178,7 @@ This project is licensed under the MIT License (c) 2025 Evan GKS. See the [LICEN
 ## 📬 Contact
 For questions or feedback, please reach out via:
 
-- **GitHub:** [EvanGks](https://github.com/EvanGks)
-- **X (Twitter):** [@Evan6471133782](https://x.com/Evan6471133782)
-- **LinkedIn:** [Evangelos Gakias](https://www.linkedin.com/in/evangelos-gakias-346a9072)
-- **Kaggle:** [evangelosgakias](https://www.kaggle.com/evangelosgakias)
-- **Email:** [evangks88@gmail.com](mailto:evangks88@gmail.com)
+- **GitHub:** [chonglangchen](https://github.com/chonglangchen)
+- **Email:** [chen19359373970@gmail.com](mailto:chen19359373970@gmail.com)
 
 ---
