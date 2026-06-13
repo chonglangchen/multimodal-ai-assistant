@@ -59,8 +59,8 @@ See [`app/backend/utils/kokoro_voices.py`](app/backend/utils/kokoro_voices.py) f
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/chonglangchen/ai-visual-assistant.git
-   cd ai-visual-assistant
+   git clone https://github.com/chonglangchen/multimodal-ai-assistant.git
+   cd multimodal-ai-assistant
    ```
 
 2. **Create and activate a virtual environment:**
