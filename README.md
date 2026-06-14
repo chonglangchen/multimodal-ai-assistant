@@ -16,6 +16,10 @@ A full-stack multimodal AI assistant that enables users to interact with images 
 
 ![Main UI](assets/UI_demo.png)
 
+## Demo Video
+
+🎥 [Watch the demo on Bilibili](https://www.bilibili.com/video/BV1ZrJP6bEev/)
+
 ## Architecture
 
 ```
